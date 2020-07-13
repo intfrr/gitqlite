@@ -2,6 +2,7 @@ package gitqlite
 
 import (
 	"database/sql"
+	"io"
 	"io/ioutil"
 	"os"
 	"testing"
@@ -102,6 +103,25 @@ func TestCommitCounts(t *testing.T) {
 	if numRows != expected {
 		t.Fatalf("expected %d rows got: %d", expected, numRows)
 	}
+	rows, err = instance.DB.Query("SELECT id, author_email FROM commits")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	commitChecker, err = fixtureRepo.Log(&git.LogOptions{
+		From:  headRef.Hash(),
+		Order: git.LogOrderCommitterTime,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	count, match, err := checkRowContents(rows, commitChecker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !match {
+		t.Fatalf("Contents does not match at row number: %d ", count)
+	}
 }
 
 func TestFileCounts(t *testing.T) {
@@ -188,4 +208,49 @@ func getRowsCount(rows *sql.Rows) int {
 	}
 
 	return count
+}
+func checkRowContents(rows *sql.Rows, iter object.CommitIter) (int, bool, error) {
+	var (
+		count int = 0
+	)
+	columns, err := rows.Columns()
+	if err != nil {
+		return count, false, err
+	}
+
+	pointers := make([]interface{}, len(columns))
+	container := make([]sql.NullString, len(columns))
+
+	for i := range pointers {
+		pointers[i] = &container[i]
+	}
+
+	for rows.Next() {
+		current, err := iter.Next()
+		if err != nil {
+			if err == io.EOF {
+			} else {
+				return count, false, err
+			}
+		}
+		err = rows.Scan(pointers...)
+		if err != nil {
+			return count, false, err
+		}
+
+		r := make([]string, len(columns))
+		for i, c := range container {
+			if c.Valid {
+				r[i] = c.String
+			} else {
+				r[i] = "NULL"
+			}
+		}
+		if r[0] != current.Hash.String() || r[1] != current.Author.Email {
+			return count, false, err
+		}
+
+	}
+	return count, true, err
+
 }
